@@ -8,7 +8,7 @@ const PackageJson = z.object({
   bin: z.record(z.string()),
   scripts: z.record(z.string()),
   main: z.string()
-});
+}).strict();
 
 const TSConfig = z.object({
   compilerOptions: z.object({
@@ -40,7 +40,7 @@ const Repo = z.object({
   'package.json': PackageJson,
   'tsconfig.json': TSConfig,
   '.vscode/settings.json': VSCodeSettings
-})
+}).strict();
 
 const PackageJsonVal: z.infer<typeof PackageJson> =
 {
@@ -90,7 +90,7 @@ const TSConfigVal: z.infer<typeof TSConfig> =
 }
 
 export default async function() {
-  return leverepo({
+  const {shape, config} =  leverepo({
     shape: Repo, 
     config: {
       'package.json': PackageJsonVal,
@@ -103,4 +103,5 @@ export default async function() {
       } 
     }
   });
+  return {shape, config};
 }
