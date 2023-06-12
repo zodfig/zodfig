@@ -90,8 +90,8 @@ const TSConfigVal: z.infer<typeof TSConfig> =
 }
 
 export default async function() {
-  const {shape, config} =  leverepo({
-    shape: Repo, 
+  const {schema, config} =  leverepo({
+    schema: Repo, 
     config: {
       'package.json': PackageJsonVal,
       'tsconfig.json': TSConfigVal,
@@ -103,5 +103,5 @@ export default async function() {
       } 
     }
   });
-  return {shape, config};
+  return {schema, config};
 }

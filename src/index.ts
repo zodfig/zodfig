@@ -1,21 +1,22 @@
 import { ZodError, ZodType, z } from 'zod';
 import * as fs from 'fs';
-import * as path from 'path';
 import { PartialDeep } from 'type-fest';
 import mergeDeep from 'merge-deep';
 import * as cmd from 'commander';
 import { Writer, Writers, write } from './write';
-import { ChildProcess, spawn } from 'child_process';
+import { ChildProcess, spawn, execSync } from 'child_process';
 import chokidar from 'chokidar';
+import { execToolConfig } from './tool-config';
+import { INITIAL_WORKING_DIR, KnownError, TOOL_NAME, getLeverepoFilePath } from './utils';
 
-export function leverepo<T, ZT extends ZodType<T>>(setup: {shape: ZT, config: z.infer<ZT>}) {
+export function leverepo<T, ZT extends ZodType<T>>(setup: {schema: ZT, config: z.infer<ZT>}) {
   return setup;
 }
 
 export { z } from 'zod';
 
 export function merge<T extends object>(base: T, ...overrides: PartialDeep<T>[]): T {
-  return overrides.reduce(mergeDeep, base);
+  return mergeDeep(base, ...overrides);
 }
 
 export type * as UtilTypes from 'type-fest';
@@ -25,18 +26,23 @@ export function setWriter(fileExt: string, writer: Writer) {
   Writers[fileExt] = writer;
 }
 
-const NAME = require('../package.json').name.split('/')[0].substring(1);
+export { LeverepoConfigSchema } from './utils';
 
-function getLeverepoFilePath() {
+export function getPnpmOverrides() {
   const cwd = process.cwd();
-  return path.resolve(cwd, `${NAME}.ts`);
+  process.chdir(INITIAL_WORKING_DIR);
+  const allPackages = execSync('pnpm m ls --depth=-1').toString().split('\n').filter(line => line.length);
+  
+  process.chdir(cwd);
 }
+
+let isWatching = false;
 
 export function cli() {
   const command = cmd.program
-    .name(NAME)
-    .option('-w, --watch', `re-run ${NAME} on change to ${NAME}.ts file`)
-    .argument('[command]', `command to run when ${NAME} has finished generating config. Ex: \`pnpm ${NAME} -w "pnpm start"\``)
+    .name(TOOL_NAME)
+    .option('-w, --watch', `re-run ${TOOL_NAME} on change to ${TOOL_NAME}.ts file`)
+    .argument('[command]', `command to run when ${TOOL_NAME} has finished generating config. Ex: \`pnpm ${TOOL_NAME} -w "pnpm start"\``)
     .action(async (command, { watch }) => {
       let going = false;
       let shouldRego = false;
@@ -54,6 +60,7 @@ export function cli() {
           activeCmd.childProc.kill('SIGTERM');
         }
         going = true;
+        isWatching = !!watch;
         await run();
         if (command) {
           console.log(`${activeCmd ? 're-' : ''}running "${command}"`);
@@ -76,20 +83,21 @@ export function cli() {
         going = false;
       }
       if (watch) {
-        console.log(`Watching ${NAME}.ts...`);
+        const filePath = getLeverepoFilePath(INITIAL_WORKING_DIR);
+        console.log(`Watching ${filePath}...`);
         let ready = false;
-        chokidar.watch(getLeverepoFilePath()).on('all', (eventName) => {
+        chokidar.watch(filePath).on('all', (eventName) => {
           switch(eventName) {
             case 'add':
             case 'change':
               if (eventName === 'add' && !ready) {
                 break;
               }
-              console.log(`Detected ${eventName} for ${NAME}.ts`);
+              console.log(`Detected ${eventName} for ${TOOL_NAME}.ts`);
               go();
               break;
             default:
-              console.log(`Detected ${eventName} for ${NAME}.ts (halting watch)`);
+              console.log(`Detected ${eventName} for ${TOOL_NAME}.ts (halting watch)`);
               if (activeCmd) {
                 console.log(`Stopping "${activeCmd.name}" via SIGTERM`);
                 activeCmd.childProc.kill();
@@ -105,44 +113,38 @@ export function cli() {
   command.parse();
 }
 
-class KnownError extends Error {}
-
-export async function run() {
-  const configDeclarationFile = getLeverepoFilePath();
-  if (!fs.existsSync(configDeclarationFile)) {
-    console.log(`Could not locate ${configDeclarationFile}`);
-    return;
-  }
-  delete require.cache[configDeclarationFile];
-  const {default: fn} = require(configDeclarationFile);
-  if (typeof fn !== 'function') {
-    console.log(`Expected ${configDeclarationFile} to export default function.`);
-    return;
-  }
-  let failed = false;
-  await fn()
-    .then(<T extends ZodType> ({shape, config}: ReturnType<typeof leverepo<T, ZodType<T>>>) => {
-      if (typeof config === 'undefined' || typeof shape === 'undefined') {
-        throw new KnownError(`Export of ${configDeclarationFile} must be async default function returning Zod type def and config tuple`);
-      }
-      const parsed = shape.parse(config);
-      return write(parsed);
-    })
-    .catch((e: Error) => {
-      failed = true;
-      if (e instanceof ZodError) {
-        console.log(`Zod validation error${e.errors.length > 1 ? 's' : ''}`);
-        console.log(e.errors);
-        return;
-      } else if (e instanceof KnownError) {
-        console.log(e.message);
-        return;
-      }
+export async function run(dir?: string) {
+  const runIn = dir ?? INITIAL_WORKING_DIR;
+  try {
+    const configDeclarationFile = getLeverepoFilePath(runIn);
+    console.log(`Writing config for ${configDeclarationFile}`);
+    if (!fs.existsSync(configDeclarationFile)) {
+      throw new KnownError(`Could not locate ${configDeclarationFile}`);
+    }
+    delete require.cache[configDeclarationFile];
+    const {default: fn} = require(configDeclarationFile);
+    if (typeof fn !== 'function') {
+      throw new KnownError(`Expected ${configDeclarationFile} to export default function.`);
+    }
+    const {config, schema}: {config: unknown, schema: ZodType} = await fn();
+    if (typeof config === 'undefined' || typeof schema === 'undefined') {
+      throw new KnownError(`Export of ${configDeclarationFile} must be async default function returning Zod type def and config tuple`);
+    }
+    const parsed = schema.parse(config);
+    await write(parsed);
+    console.log(`Config files written for ${configDeclarationFile}`);
+    await execToolConfig(configDeclarationFile);
+  } catch(e) {
+    if (e instanceof ZodError) {
+      console.log(`Zod validation error${e.errors.length > 1 ? 's' : ''}`);
+      console.log(e.errors);
+    } else if (e instanceof KnownError) {
+      console.log(e.message);
+    } else {
       console.log(e);
-    })
-    .then(() => {
-      if (!failed) {
-        console.log('Config files written.');
-      }
-    });
+    }
+  }
+  if (isWatching && runIn === INITIAL_WORKING_DIR) {
+    console.log('Waiting for changes...');
+  }
 }
