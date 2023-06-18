@@ -1,5 +1,6 @@
-// replace './src' with '@leverepo/core' in your repo
-import { leverepo, z, merge, UtilTypes } from './src';
+// replace './src' with '@zodfig/core' in your repo
+import { leverepo, z } from './src';
+import { TOOL_NAME } from './src/utils';
 
 const PackageJson = z.object({
   name: z.string(),
@@ -44,23 +45,24 @@ const Repo = z.object({
 
 const PackageJsonVal: z.infer<typeof PackageJson> =
 {
-  "name": "@leverepo/core",
+  "name": `@${TOOL_NAME}/core`,
   "dependencies": {
     "@swc/core": "^1.3.61",
     "@swc/helpers": "^0.5.1",
-    "cmd-ts": "^0.12.1",
     "merge-deep": "^3.0.3",
     "ts-node": "^10.9.1",
     "type-fest": "^3.11.1",
     "typescript": "^5.0.4",
     "yaml": "^2.3.1",
-    "zod": "^3.21.4"
+    "zod": "^3.21.4",
+    "commander": "^11.0.0",
+    "chokidar": "^3.5.3"
   },
   "scripts": {
-    "leverepo": "node bin.js"
+    [TOOL_NAME]: "node bin.js"
   },
   "bin": {
-    "leverepo": "./bin.js"
+    [TOOL_NAME]: "./bin.js"
   },
   "main": "src",
   "devDependencies": {

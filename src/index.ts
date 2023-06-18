@@ -6,8 +6,7 @@ import * as cmd from 'commander';
 import { Writer, Writers, write } from './write';
 import { ChildProcess, spawn, execSync } from 'child_process';
 import chokidar from 'chokidar';
-import { execToolConfig } from './tool-config';
-import { INITIAL_WORKING_DIR, KnownError, TOOL_NAME, getLeverepoFilePath } from './utils';
+import { INITIAL_WORKING_DIR, KnownError, TOOL_NAME, getProjectConfigFilePath } from './utils';
 
 export function leverepo<T, ZT extends ZodType<T>>(setup: {schema: ZT, config: z.infer<ZT>}) {
   return setup;
@@ -24,16 +23,6 @@ export type * as UtilTypes from 'type-fest';
 export function setWriter(fileExt: string, writer: Writer) {
   // TODO: have some way to inform users when a library overrode a writer
   Writers[fileExt] = writer;
-}
-
-export { LeverepoConfigSchema } from './utils';
-
-export function getPnpmOverrides() {
-  const cwd = process.cwd();
-  process.chdir(INITIAL_WORKING_DIR);
-  const allPackages = execSync('pnpm m ls --depth=-1').toString().split('\n').filter(line => line.length);
-  
-  process.chdir(cwd);
 }
 
 let isWatching = false;
@@ -83,7 +72,7 @@ export function cli() {
         going = false;
       }
       if (watch) {
-        const filePath = getLeverepoFilePath(INITIAL_WORKING_DIR);
+        const filePath = getProjectConfigFilePath(INITIAL_WORKING_DIR);
         console.log(`Watching ${filePath}...`);
         let ready = false;
         chokidar.watch(filePath).on('all', (eventName) => {
@@ -116,7 +105,7 @@ export function cli() {
 export async function run(dir?: string) {
   const runIn = dir ?? INITIAL_WORKING_DIR;
   try {
-    const configDeclarationFile = getLeverepoFilePath(runIn);
+    const configDeclarationFile = getProjectConfigFilePath(runIn);
     console.log(`Writing config for ${configDeclarationFile}`);
     if (!fs.existsSync(configDeclarationFile)) {
       throw new KnownError(`Could not locate ${configDeclarationFile}`);
@@ -133,7 +122,6 @@ export async function run(dir?: string) {
     const parsed = schema.parse(config);
     await write(parsed);
     console.log(`Config files written for ${configDeclarationFile}`);
-    await execToolConfig(configDeclarationFile);
   } catch(e) {
     if (e instanceof ZodError) {
       console.log(`Zod validation error${e.errors.length > 1 ? 's' : ''}`);
