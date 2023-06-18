@@ -1,24 +1,63 @@
 import { ZodError, ZodType, z } from 'zod';
+import { partialUtil } from 'zod/lib/helpers/partialUtil';
 import * as fs from 'fs';
-import { PartialDeep } from 'type-fest';
 import mergeDeep from 'merge-deep';
 import * as cmd from 'commander';
 import { Writer, Writers, write } from './write';
 import { ChildProcess, spawn, execSync } from 'child_process';
 import chokidar from 'chokidar';
 import { INITIAL_WORKING_DIR, KnownError, TOOL_NAME, getProjectConfigFilePath } from './utils';
-
-export function leverepo<T, ZT extends ZodType<T>>(setup: {schema: ZT, config: z.infer<ZT>}) {
-  return setup;
-}
-
 export { z } from 'zod';
 
-export function merge<T extends object>(base: T, ...overrides: PartialDeep<T>[]): T {
-  return mergeDeep(base, ...overrides);
-}
+/**
+ * 
+ */
+export class ZodFig<T extends z.AnyZodObject> {
+  public constructor(readonly _schema: T, readonly _config: z.infer<T>) {
+    if (this._config) Object.freeze(this._config);
+  }
 
-export type * as UtilTypes from 'type-fest';
+  /**
+   * Merge current schema + config with another zodfig's schema + config.
+   * @param merging zodfig to merge with
+   * 
+   * Implementation taken from https://github.com/colinhacks/zod/blob/5e23b4fae4715c7391f9ceb4369421a034851b4c/src/types.ts#L2470-L2476
+   * TODO: it seems like we're blocked with this tool because there isn't a merge deep ability in Zod.
+   *       currently someone can add config for new files but cannot use the merge method to merge configs which touch the same file
+   *       There's an implementation of merge deep, so we should bring it in and make it more generic
+   *       - https://github.com/colinhacks/zod/pull/1739
+   *       - https://github.com/colinhacks/zod/issues/1508
+   */
+  public merge<Incoming extends z.AnyZodObject, Augmentation extends Incoming['shape']>(
+    merging: ZodFig<Incoming>
+  ): ZodFig<z.ZodObject<
+    z.objectUtil.extendShape<T['shape'], Augmentation>,
+    Incoming["_def"]["unknownKeys"],
+    Incoming["_def"]["catchall"]
+  >> {
+    return new ZodFig(this._schema.merge(merging._schema), mergeDeep({}, this._config ?? {}, merging._config ?? {}) as any) as any;
+  }
+
+  /**
+   * Overrides the current config
+   * 
+   * @param config 
+   * @returns new Zodfig instance which has overriden config
+   */
+  public override(config: z.infer<partialUtil.DeepPartial<T>>): ZodFig<T> {
+    return new ZodFig(this._schema, mergeDeep({}, this._config, config));
+  }
+
+  /**
+   * Overrides the current config
+   * 
+   * @param overrider async function giving a promise to new config
+   * @returns promise to new Zodfig instance which has overriden config
+   */
+  public async overrideAync(overrider: (curConfig: z.infer<T>) => Promise<z.infer<partialUtil.DeepPartial<T>>>): Promise<ZodFig<T>> {
+    return this.override(await overrider(this._config));
+  }
+}
 
 export function setWriter(fileExt: string, writer: Writer) {
   // TODO: have some way to inform users when a library overrode a writer
@@ -30,9 +69,10 @@ let isWatching = false;
 export function cli() {
   const command = cmd.program
     .name(TOOL_NAME)
+    .option('-v, --verbose', `print resulting ${TOOL_NAME} before writing`)
     .option('-w, --watch', `re-run ${TOOL_NAME} on change to ${TOOL_NAME}.ts file`)
     .argument('[command]', `command to run when ${TOOL_NAME} has finished generating config. Ex: \`pnpm ${TOOL_NAME} -w "pnpm start"\``)
-    .action(async (command, { watch }) => {
+    .action(async (command, { watch, verbose }) => {
       let going = false;
       let shouldRego = false;
       let activeCmd: {name: string; childProc: ChildProcess} | undefined = undefined;
@@ -50,7 +90,7 @@ export function cli() {
         }
         going = true;
         isWatching = !!watch;
-        await run();
+        await run(!!verbose);
         if (command) {
           console.log(`${activeCmd ? 're-' : ''}running "${command}"`);
           const [name, ...args] = command.split(' ');
@@ -102,8 +142,8 @@ export function cli() {
   command.parse();
 }
 
-export async function run(dir?: string) {
-  const runIn = dir ?? INITIAL_WORKING_DIR;
+export async function run(print = false, runIn = INITIAL_WORKING_DIR) {
+  console.log()
   try {
     const configDeclarationFile = getProjectConfigFilePath(runIn);
     console.log(`Writing config for ${configDeclarationFile}`);
@@ -115,11 +155,11 @@ export async function run(dir?: string) {
     if (typeof fn !== 'function') {
       throw new KnownError(`Expected ${configDeclarationFile} to export default function.`);
     }
-    const {config, schema}: {config: unknown, schema: ZodType} = await fn();
-    if (typeof config === 'undefined' || typeof schema === 'undefined') {
-      throw new KnownError(`Export of ${configDeclarationFile} must be async default function returning Zod type def and config tuple`);
+    const zodfig: ZodFig<any> = await fn();
+    const parsed = zodfig._schema.parse(zodfig._config);
+    if (print) {
+      console.log(JSON.stringify(parsed, null, 2));
     }
-    const parsed = schema.parse(config);
     await write(parsed);
     console.log(`Config files written for ${configDeclarationFile}`);
   } catch(e) {

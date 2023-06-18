@@ -9,24 +9,30 @@ ZodFig offers a better way to share cross-project config.
 `npm i -g @zodfig/cli` (WIP, I haven't published the initial version yet)
 
 ✅ Keep config for projects generated from a template up to date  
-✅ Typechecking, auto-complete, and in-IDE documentation for all project configuration  
+✅ Typechecking, auto-complete, automated refactoring, and in-IDE documentation for all project configuration  
 ✅ Bits of config are shared as composable npm packages  
 
 ## What does it do?
 
-ZodFig scans the current working directory and all child directories for any `zodfig.ts` file. For each file it finds, it runs the default async function exported from that file if present. The function is expected to return a
+ZodFig scans the current working directory and all child directories for any `zodfig.ts` file. For each file it finds, it runs the default async function exported from that file if present. The function is expected to return a `ZodFig<T>` instance where `T` is a ZodObject which maps from relative filepath string to config for that file, and the returned schema is used by your IDE and the `zodfig` CLI to validate that the config actually mateches the type `T`. 
 
-```typescript
-Promise<{schema: ZodType<T>, config: T}>
 ```
+Usage: zodfig [options] [command]
 
-where `T` is a map from relative filepath string to config for that file, and the returned schema is used by your IDE and the ZodFig CLI to validate that the config actually mateches the type `T`. 
+Arguments:
+  command        command to run when zodfig has finished generating config. Ex: `pnpm zodfig -w "pnpm start"`
+
+Options:
+  -v, --verbose  print resulting zodfig before writing
+  -w, --watch    re-run zodfig on change to zodfig.ts file
+  -h, --help     display help for command
+```
 
 ### Example:
 
 ```typescript
 // zodfig.ts
-import { z, merge } from '@zodfig/core';
+import { z, ZodFig } from '@zodfig/core';
 
 const PackageJson = z.object({
   name: z.optional(z.string()),
@@ -47,45 +53,47 @@ const Repo = z.object({
   'package.json': z.optional(PackageJson)
 });
 
-const tsdefaults: z.infer<typeof Repo> = {
-  'tsconfig.json': {
-    compilerOptions: {
-      lib: ['esnext']
-    }
-  },
-  'package.json': {
-    devDependencies: {
-      typescript: "^5.0"
-    }
-  }
-}
-
-const nodeProject: z.infer<typeof Repo> = {
-  'tsconfig.json': {
-    compilerOptions: {
-      types: ['node']
-    }
-  },
-  'package.json': {
-    engines: {
-      node: '>= 20'
+const tsDefaults = new ZodFig(
+  Repo,
+  {
+    'tsconfig.json': {
+      compilerOptions: {
+        lib: ['esnext']
+      }
     },
-    devDependencies: {
-      '@types/node': '^20.0'
-    }
-  }
-}
-
-export default async function(name = 'node-ts-template') {
-  return merge(Repo)(
-    tsfefaults,
-    nodeProject,
-    {
-      'package.json': {
-        name
+    'package.json': {
+      devDependencies: {
+        typescript: "^5.0"
       }
     }
-  );
+  }
+);
+
+const nodeProject = new ZodFig(
+  Repo, 
+  {
+    'tsconfig.json': {
+      compilerOptions: {
+        types: ['node']
+      }
+    },
+    'package.json': {
+      engines: {
+        node: '>= 20'
+      },
+      devDependencies: {
+        '@types/node': '^20.0'
+      }
+    }
+  }
+);
+
+export default async function(name = 'node-ts-template') {
+  return tsDefaults.merge(nodeProject).override({
+    'package.json': {
+      name
+    }
+  });
 }
 ```
 
@@ -183,11 +191,11 @@ import { composeSupergraph } from './utils/compose-supergraph';
 
 export default async function() {
   const { schemaPath } = await composeSupergraph();
-  return merge(next, tailwind, typescript, turbo, relay)({
+  return next.merge(tailwind).merge(typescript).merge(turbo).merge(relay).override({
     'relay.config.json': {
       schema: schemaPath
     }
-  })
+  });
 }
 ```
 
@@ -198,6 +206,7 @@ Which would generate the following files:
 - tsconfig.json
 - relay.config.json
 - turbo.json
+- vercel.json
 
 all with the values you would expect.
 
