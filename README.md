@@ -1,18 +1,28 @@
 # ZodFig
 
-A better way to share cross-project config
+Manage your project configuration with [Zod](https://github.com/colinhacks/zod).
+
+----
+
+ZodFig offers a better way to share cross-project config.
 
 `npm i -g @zodfig/cli` (WIP, I haven't published the initial version yet)
 
-- [x] Keep config for projects generated from a template up to date
-- [x] Typechecking, auto-complete, and in-IDE documentation for all project configuration
-- [x] Bits of config are shared as composable npm packages
+✅ Keep config for projects generated from a template up to date  
+✅ Typechecking, auto-complete, and in-IDE documentation for all project configuration  
+✅ Bits of config are shared as composable npm packages  
 
 ## What does it do?
 
-ZodFig scans a current working directory and all child directories for any `zodfig.ts` file. For each file it finds, it runs the default async function export from that file if present, which is expected to return a promise to json which is a map from relative filepath string to config for that file, plus a zod schema which will be used to validate that config both at compile and at runtime, ensuring your IDE can now validate the config for your entire app and that the CLI will validate it for you as well.
+ZodFig scans the current working directory and all child directories for any `zodfig.ts` file. For each file it finds, it runs the default async function exported from that file if present. The function is expected to return a
 
-Let's take this example
+```typescript
+Promise<{schema: ZodType<T>, config: T}>
+```
+
+where `T` is a map from relative filepath string to config for that file, and the returned schema is used by your IDE and the ZodFig CLI to validate that the config actually mateches the type `T`. 
+
+### Example:
 
 ```typescript
 // zodfig.ts
@@ -79,9 +89,9 @@ export default async function(name = 'node-ts-template') {
 }
 ```
 
-This would generate the following files:
+Running `zodfig` would generate the following files:
 
-```json
+```jsonc
 // package.json
 {
   "name": "node-ts-template",
@@ -95,7 +105,7 @@ This would generate the following files:
 }
 ```
 
-```json
+```jsonc
 // tsconfig.json
 {
   "compilerOptions": {
@@ -161,7 +171,7 @@ And because all the config is type-safe, your IDE and the zodfig CLI will show y
 
 Extending config by library sort of works today with the extends functionality of several tools, like eslint or tsconfig or renovate, but unfortunately many of these projects don't have extends functionality (ie relay) or have limited extensibility (ie tsconfg allows you to extend `compilerOptions` but not other fields on the root level of the JSON), and all of these projects implement the config extension in their own way. ZodFig suddenly makes all configuration files extensible by any number of template bases (not just one), and the extension protocol is universal, so you could easily ship a ZodFig library which sets up configuration for several tools at the same time (that's why I created this).
 
-In the future, the goal here is that most major open source projects will have some official companion zodfig library, so we all have a clean and automated way of keeping our project configuration up to date, with our repo only containing the overrides it's actually concerned with. Here's an example of what I'm going for.
+In the future, the goal here is that most major open source configurable projects will have some official companion zodfig library, so we all have a clean and automated way of keeping our project configuration up to date, with our repo only containing the overrides it's actually concerned with, and all `create-*` npm packages will come with a zodfig.ts to keep the project up-to-date long after the project was generated. Here's an example of what I'm going for.
 
 ```typescript
 // zodfig.ts
@@ -173,7 +183,7 @@ import { composeSupergraph } from './utils/compose-supergraph';
 
 export default async function() {
   const { schemaPath } = await composeSupergraph();
-  return merge(next, tailwind, typescript)({
+  return merge(next, tailwind, typescript, turbo, relay)({
     'relay.config.json': {
       schema: schemaPath
     }
