@@ -3,10 +3,11 @@ import { partialUtil } from 'zod/lib/helpers/partialUtil';
 import * as fs from 'fs';
 import mergeDeep from 'merge-deep';
 import * as cmd from 'commander';
-import { Writer, Writers, write } from './write';
+import { write } from './write';
 import { ChildProcess, spawn, execSync } from 'child_process';
 import chokidar from 'chokidar';
-import { INITIAL_WORKING_DIR, KnownError, TOOL_NAME, getProjectConfigFilePath } from './utils';
+import { INITIAL_WORKING_DIR, KnownError, TOOL_NAME, FILE_NAME } from './utils';
+import { scan } from './scan';
 export { z } from 'zod';
 
 /**
@@ -55,13 +56,9 @@ export class ZodFig<T extends z.AnyZodObject> {
    * @returns promise to new Zodfig instance which has overriden config
    */
   public async overrideAync(overrider: (curConfig: z.infer<T>) => Promise<z.infer<partialUtil.DeepPartial<T>>>): Promise<ZodFig<T>> {
+    // TODO: maybe deep copy before passing to input fn
     return this.override(await overrider(this._config));
   }
-}
-
-export function setWriter(fileExt: string, writer: Writer) {
-  // TODO: have some way to inform users when a library overrode a writer
-  Writers[fileExt] = writer;
 }
 
 let isWatching = false;
@@ -76,7 +73,7 @@ export function cli() {
       let going = false;
       let shouldRego = false;
       let activeCmd: {name: string; childProc: ChildProcess} | undefined = undefined;
-      async function go() {
+      async function go(filepaths: string[]) {
         if (going) {
           shouldRego = true;
           return;
@@ -90,7 +87,7 @@ export function cli() {
         }
         going = true;
         isWatching = !!watch;
-        await run(!!verbose);
+        await run(filepaths[0], !!verbose);
         if (command) {
           console.log(`${activeCmd ? 're-' : ''}running "${command}"`);
           const [name, ...args] = command.split(' ');
@@ -111,49 +108,52 @@ export function cli() {
         }
         going = false;
       }
-      if (watch) {
-        const filePath = getProjectConfigFilePath(INITIAL_WORKING_DIR);
-        console.log(`Watching ${filePath}...`);
-        let ready = false;
-        chokidar.watch(filePath).on('all', (eventName) => {
-          switch(eventName) {
-            case 'add':
-            case 'change':
-              if (eventName === 'add' && !ready) {
-                break;
-              }
-              console.log(`Detected ${eventName} for ${TOOL_NAME}.ts`);
-              go();
-              break;
-            default:
-              console.log(`Detected ${eventName} for ${TOOL_NAME}.ts (halting watch)`);
-              if (activeCmd) {
-                console.log(`Stopping "${activeCmd.name}" via SIGTERM`);
-                activeCmd.childProc.kill();
-              }
-              process.exit();
-          }
-        }).on('ready', () => {
-          ready = true;
-        });
+      const configFiles = scan(INITIAL_WORKING_DIR);
+      if (configFiles.length === 0) {
+        console.log(`Found no ${FILE_NAME} files in ${INITIAL_WORKING_DIR}`);
       }
-      await go();
+      if (watch) {
+        for (const file of configFiles) {
+          console.log(`Watching ${file}...`);
+          let ready = false;
+          chokidar.watch(file).on('all', (eventName) => {
+            switch(eventName) {
+              case 'add':
+              case 'change':
+                if (eventName === 'add' && !ready) {
+                  break;
+                }
+                console.log(`Detected ${eventName} for ${TOOL_NAME}.ts`);
+                go(configFiles);
+                break;
+              default:
+                console.log(`Detected ${eventName} for ${TOOL_NAME}.ts (halting watch)`);
+                if (activeCmd) {
+                  console.log(`Stopping "${activeCmd.name}" via SIGTERM`);
+                  activeCmd.childProc.kill();
+                }
+                process.exit();
+            }
+          }).on('ready', () => {
+            ready = true;
+          });
+        }
+      }
+      await go(configFiles);
     });
   command.parse();
 }
 
-export async function run(print = false, runIn = INITIAL_WORKING_DIR) {
-  console.log()
+export async function run(filepath: string, print = false) {
   try {
-    const configDeclarationFile = getProjectConfigFilePath(runIn);
-    console.log(`Writing config for ${configDeclarationFile}`);
-    if (!fs.existsSync(configDeclarationFile)) {
-      throw new KnownError(`Could not locate ${configDeclarationFile}`);
+    if (!fs.existsSync(filepath)) {
+      return;
     }
-    delete require.cache[configDeclarationFile];
-    const {default: fn} = require(configDeclarationFile);
+    console.log(`Writing config for ${filepath}`);
+    delete require.cache[filepath];
+    const {default: fn} = require(filepath);
     if (typeof fn !== 'function') {
-      throw new KnownError(`Expected ${configDeclarationFile} to export default function.`);
+      throw new KnownError(`Expected ${filepath} to export default function.`);
     }
     const zodfig: ZodFig<any> = await fn();
     const parsed = zodfig._schema.parse(zodfig._config);
@@ -161,7 +161,7 @@ export async function run(print = false, runIn = INITIAL_WORKING_DIR) {
       console.log(JSON.stringify(parsed, null, 2));
     }
     await write(parsed);
-    console.log(`Config files written for ${configDeclarationFile}`);
+    console.log(`Config files written for ${filepath}`);
   } catch(e) {
     if (e instanceof ZodError) {
       console.log(`Zod validation error${e.errors.length > 1 ? 's' : ''}`);

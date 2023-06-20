@@ -14,7 +14,7 @@ ZodFig offers a better way to share cross-project config.
 
 ## What does it do?
 
-ZodFig scans the current working directory and all child directories for any `zodfig.ts` file. For each file it finds, it runs the default async function exported from that file if present. The function is expected to return a `ZodFig<T>` instance where `T` is a ZodObject which maps from relative filepath string to config for that file, and the returned schema is used by your IDE and the `zodfig` CLI to validate that the config actually mateches the type `T`. 
+ZodFig scans the current working directory and all child directories for any `zodfig.ts` file. For each file it finds, it runs the default async function exported from that file if present. The function is expected to return a `ZodFig<T>` instance where `T` is a ZodObject which maps from relative filepath string to config for that file, and the returned schema is used by your IDE and the `zodfig` CLI to validate that the config actually matches the type `T`. 
 
 ```
 Usage: zodfig [options] [command]
