@@ -1,0 +1,8 @@
+{
+  "name": "zod-merge-deep",
+  "version": "0.0.1",
+  "main": "src",
+  "dependencies": {
+    "zod": "^3.21.4"
+  }
+}

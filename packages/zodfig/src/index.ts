@@ -8,6 +8,8 @@ import { ChildProcess, spawn, execSync } from 'child_process';
 import chokidar from 'chokidar';
 import { INITIAL_WORKING_DIR, KnownError, TOOL_NAME, FILE_NAME } from './utils';
 import { scan } from './scan';
+import 'zod-merge-deep';
+
 export { z } from 'zod';
 
 /**
@@ -36,6 +38,7 @@ export class ZodFig<T extends z.AnyZodObject> {
     Incoming["_def"]["unknownKeys"],
     Incoming["_def"]["catchall"]
   >> {
+    this._schema.mergeDeep();
     return new ZodFig(this._schema.merge(merging._schema), mergeDeep({}, this._config ?? {}, merging._config ?? {}) as any) as any;
   }
 
@@ -61,19 +64,21 @@ export class ZodFig<T extends z.AnyZodObject> {
   }
 }
 
-let isWatching = false;
-
 export function cli() {
   const command = cmd.program
     .name(TOOL_NAME)
     .option('-v, --verbose', `print resulting ${TOOL_NAME} before writing`)
     .option('-w, --watch', `re-run ${TOOL_NAME} on change to ${TOOL_NAME}.ts file`)
+    // TODO update to accept multiple commands
     .argument('[command]', `command to run when ${TOOL_NAME} has finished generating config. Ex: \`pnpm ${TOOL_NAME} -w "pnpm start"\``)
-    .action(async (command, { watch, verbose }) => {
+    .action(async (command: string | undefined, { watch, verbose }) => {
       let going = false;
       let shouldRego = false;
-      let activeCmd: {name: string; childProc: ChildProcess} | undefined = undefined;
-      async function go(filepaths: string[]) {
+      let activeCmds: Record<string, Record<string, ChildProcess>> = {};
+      async function go(filepath: string) {
+        if (!activeCmds[filepath]) {
+          activeCmds[filepath] = {};
+        }
         if (going) {
           shouldRego = true;
           return;
@@ -81,30 +86,33 @@ export function cli() {
         if (shouldRego) {
           shouldRego = false;
         }
-        if (activeCmd) {
-          console.log(`Stopping "${activeCmd.name}" via SIGTERM`);
-          activeCmd.childProc.kill('SIGTERM');
+        for (const [name, activeCmd] of Object.entries(activeCmds[filepath])) {
+          console.log(`Stopping ${filepath}'s "${name}" via SIGTERM`);
+          activeCmd.kill('SIGTERM');
         }
         going = true;
-        isWatching = !!watch;
-        await run(filepaths[0], !!verbose);
-        if (command) {
-          console.log(`${activeCmd ? 're-' : ''}running "${command}"`);
-          const [name, ...args] = command.split(' ');
-          activeCmd = {
-            name: command,
-            childProc: spawn(name, args, { shell: true, stdio: 'inherit' })
-          };
-          activeCmd.childProc.on('exit', (code) => {
+        await run(filepath, !!verbose);
+        for (const [name] of Object.entries(activeCmds[filepath])) {
+          // TODO: bring in code for multiple parallel commands.
+          const presentCommand = (command as string);
+          const [cmdName, ...args] = presentCommand.split(' ');
+          activeCmds[filepath][name] = spawn(cmdName, args, {shell: true, stdio: 'inherit'});
+          activeCmds[filepath][name].on('exit', (code) => {
+            delete activeCmds[filepath][name];
             if (!watch) {
-              process.exit(code ?? undefined);
+              if(Object.keys(activeCmds[filepath]).length === 0) {
+                delete activeCmds[filepath];
+                if (Object.keys(activeCmds).length === 0) {
+                  process.exit(code ?? undefined);
+                }
+              }
             }
-          });
-        } else if (!watch) {
-          process.exit();
+          })
         }
         if (shouldRego) {
           setTimeout(go, 0);
+        } else {
+          console.log('Waiting for changes...');
         }
         going = false;
       }
@@ -112,9 +120,10 @@ export function cli() {
       if (configFiles.length === 0) {
         console.log(`Found no ${FILE_NAME} files in ${INITIAL_WORKING_DIR}`);
       }
-      if (watch) {
-        for (const file of configFiles) {
-          console.log(`Watching ${file}...`);
+      for (const file of configFiles) {
+        await go(file);
+        if (watch) {
+          console.log(`Watching ${file} for changes...`);
           let ready = false;
           chokidar.watch(file).on('all', (eventName) => {
             switch(eventName) {
@@ -124,13 +133,13 @@ export function cli() {
                   break;
                 }
                 console.log(`Detected ${eventName} for ${TOOL_NAME}.ts`);
-                go(configFiles);
+                go(file);
                 break;
               default:
                 console.log(`Detected ${eventName} for ${TOOL_NAME}.ts (halting watch)`);
-                if (activeCmd) {
-                  console.log(`Stopping "${activeCmd.name}" via SIGTERM`);
-                  activeCmd.childProc.kill();
+                for (const [name, activeCmd] of Object.entries(activeCmds[file])) {
+                  console.log(`Stopping ${file}'s "${name}" via SIGTERM`);
+                  activeCmd.kill('SIGTERM');
                 }
                 process.exit();
             }
@@ -139,7 +148,9 @@ export function cli() {
           });
         }
       }
-      await go(configFiles);
+      if (!watch) {
+        process.exit();
+      }
     });
   command.parse();
 }
@@ -171,8 +182,5 @@ export async function run(filepath: string, print = false) {
     } else {
       console.log(e);
     }
-  }
-  if (isWatching && runIn === INITIAL_WORKING_DIR) {
-    console.log('Waiting for changes...');
   }
 }
